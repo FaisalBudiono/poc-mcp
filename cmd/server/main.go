@@ -24,7 +24,7 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "todos-list",
-		Description: "Get list of what Ucul need to do",
+		Description: "Get list of what Ucul need todo",
 		Annotations: &mcp.ToolAnnotations{
 			DestructiveHint: new(false),
 			ReadOnlyHint:    true,
@@ -55,7 +55,7 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "todos-add",
-		Description: "Create todo for Ucul to do",
+		Description: "Create todo for Ucul todo",
 		Annotations: &mcp.ToolAnnotations{
 			DestructiveHint: new(false),
 			ReadOnlyHint:    false,
@@ -83,7 +83,7 @@ func main() {
 		server,
 		&mcp.Tool{
 			Name:        "todos-toggle",
-			Description: "Toggle the mark for Ucul to do as done or not done using ID for toggling the to do",
+			Description: "Toggle the todo state using its ID. If the todo is not done, it will mark the todo as done. If the todo is done it will revert the todo as not done.",
 			Annotations: &mcp.ToolAnnotations{
 				DestructiveHint: new(false),
 				ReadOnlyHint:    false,
@@ -125,7 +125,7 @@ func main() {
 		server,
 		&mcp.Tool{
 			Name:        "todos-remove",
-			Description: "Remove Ucul to do by its ID",
+			Description: "Remove Ucul todo by its ID",
 			Annotations: &mcp.ToolAnnotations{
 				DestructiveHint: new(true),
 				ReadOnlyHint:    false,
@@ -161,13 +161,13 @@ func main() {
 type InputList struct{}
 
 type InputAdd struct {
-	Text string `json:"text" jsonschema:"Description of what Ucul need to do"`
+	Text string `json:"text" jsonschema:"Description of what Ucul need todo"`
 }
 
 type InputToggle struct {
-	ID int64 `json:"id" jsonschema:"ID of the to do to be toggled"`
+	ID int64 `json:"id" jsonschema:"ID of the todo to be toggled"`
 }
 
 type InputRemove struct {
-	ID int64 `json:"id" jsonschema:"ID of the to do to be removed"`
+	ID int64 `json:"id" jsonschema:"ID of the todo to be removed"`
 }

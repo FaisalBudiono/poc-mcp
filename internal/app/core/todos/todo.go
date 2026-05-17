@@ -1,10 +1,13 @@
 package todos
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 )
 
@@ -38,12 +41,22 @@ func (c *Core) List() ([]Todo, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	err := bumpCounter()
+	if err != nil {
+		return nil, err
+	}
+
 	return readFiles()
 }
 
 func (c *Core) Add(text string) (Todo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	err := bumpCounter()
+	if err != nil {
+		return Todo{}, err
+	}
 
 	if text == "" {
 		return Todo{}, ErrEmptyText
@@ -77,6 +90,11 @@ func (c *Core) Find(id int64) (Todo, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	err := bumpCounter()
+	if err != nil {
+		return Todo{}, err
+	}
+
 	list, err := readFiles()
 	if err != nil {
 		return Todo{}, err
@@ -93,6 +111,11 @@ func (c *Core) Find(id int64) (Todo, error) {
 func (c *Core) Remove(id int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	err := bumpCounter()
+	if err != nil {
+		return err
+	}
 
 	list, err := readFiles()
 	if err != nil {
@@ -119,6 +142,11 @@ func (c *Core) Remove(id int64) error {
 func (c *Core) ToggleDone(id int64) (Todo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	err := bumpCounter()
+	if err != nil {
+		return Todo{}, err
+	}
 
 	list, err := readFiles()
 	if err != nil {
@@ -153,6 +181,8 @@ func (c *Core) ToggleDone(id int64) (Todo, error) {
 var (
 	dir = "./temp"
 	fp  = filepath.Join(dir, "data.json")
+
+	fpCounter = filepath.Join(dir, "counter.txt")
 )
 
 func readFiles() ([]Todo, error) {
@@ -179,6 +209,34 @@ func syncFiles(todos []Todo) error {
 	defer f.Close()
 
 	err = json.NewEncoder(f).Encode(todos)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func bumpCounter() error {
+	f, err := os.OpenFile(fpCounter, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var lastLine string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		lastLine = scanner.Text()
+	}
+
+	counter, err := strconv.ParseInt(lastLine, 10, 64)
+	if err != nil {
+		counter = 0
+	}
+	counter++
+
+	str := fmt.Sprintf("\n%d", counter)
+	_, err = f.Write([]byte(str))
 	if err != nil {
 		return err
 	}
