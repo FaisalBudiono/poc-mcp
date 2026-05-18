@@ -134,13 +134,13 @@ func newRunner(
 }
 
 func (r *Runner) Run(ctx context.Context, question string) error {
-	// return r.askChat(ctx, []openai.ChatCompletionMessageParamUnion{
-	// 	openai.UserMessage(question),
-	// })
+	return r.askChat(ctx, []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage(question),
+	})
 
-	return r.askResponse(ctx, responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage(question, responses.EasyInputMessageRoleUser),
-	}, param.Opt[string]{})
+	// return r.askResponse(ctx, responses.ResponseInputParam{
+	// 	responses.ResponseInputItemParamOfMessage(question, responses.EasyInputMessageRoleUser),
+	// }, param.Opt[string]{})
 }
 
 func (r *Runner) askResponse(
@@ -267,6 +267,9 @@ func (r *Runner) askChat(
 		MaxCompletionTokens: r.maxOutputTokens,
 		ReasoningEffort:     r.reasoning.Effort,
 		Tools:               r.oldTools,
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
 	})
 	defer stream.Close()
 
