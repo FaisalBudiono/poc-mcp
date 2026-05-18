@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -77,7 +76,7 @@ func main() {
 	// question := "I already clean up my dev server, can you mark that as done in my to do list? After that, let me know which tasks is done and which is still outstanding?"
 	// question := "I marked the clean up my dev server as done before. It actually hasn't done. Can you put that as not done again?"
 	// question := "Server apa yang harus aku bersihkan di todo listku?"
-	question := "Aku sudah beli susu dan clean up my bedroom. Please mark both of that as done. After that tell me, what other todo list that I need to do?"
+	question := "Aku sudah beli susu dan clean up my bedroom. Please mark both of that as done. After that tell me, what other todo list that I need to do that hasn't done?"
 
 	err = r.Run(ctx, question)
 	if err != nil {
@@ -126,19 +125,25 @@ func newRunner(
 
 		reasoning: shared.ReasoningParam{
 			// Effort: openai.ReasoningEffortNone, // Put no reasoning for faster response
-			Effort: openai.ReasoningEffortMedium,
+			Effort: openai.ReasoningEffortLow,
 		},
 		maxOutputTokens: openai.Int(12000),
-		model:           "qwen3.5:4b",
+		// model:           "qwen3.5:4b",
+		model: "qwen3.5:9b",
 	}
 }
 
 func (r *Runner) Run(ctx context.Context, question string) error {
 	return r.askChat(ctx, []openai.ChatCompletionMessageParamUnion{
+		openai.DeveloperMessage("If needed, assistant can just call tool one by one. Since if the task is not complete, it will try to ask the assistant again. Just do it one step at a time"),
 		openai.UserMessage(question),
 	})
 
 	// return r.askResponse(ctx, responses.ResponseInputParam{
+	// 	responses.ResponseInputItemParamOfMessage(
+	// 		"If needed, assistant can just call tool one by one. Since if the task is not complete, it will try to ask the assistant again. Just do it one step at a time",
+	// 		responses.EasyInputMessageRoleDeveloper,
+	// 	),
 	// 	responses.ResponseInputItemParamOfMessage(question, responses.EasyInputMessageRoleUser),
 	// }, param.Opt[string]{})
 }
@@ -161,9 +166,9 @@ func (r *Runner) askResponse(
 	})
 	defer stream.Close()
 
-	var outputText string
 	var tokenUsed int64
 	var currentResponseID param.Opt[string]
+	justReachConclusion := true
 
 	var toolCalls []responses.ResponseFunctionToolCall
 
@@ -175,10 +180,16 @@ func (r *Runner) askResponse(
 		switch variant := data.AsAny().(type) {
 		case responses.ResponseReasoningSummaryTextDeltaEvent:
 			fmt.Print(variant.Delta)
-		case responses.ResponseCompletedEvent:
-			outputText = variant.Response.OutputText()
-			fmt.Println(outputText)
+		case responses.ResponseTextDeltaEvent:
+			if justReachConclusion {
+				fmt.Println()
+				fmt.Println()
+				fmt.Println("Answer:")
+			}
+			justReachConclusion = false
 
+			fmt.Print(variant.Delta)
+		case responses.ResponseCompletedEvent:
 			tokenUsed = variant.Response.Usage.TotalTokens
 			currentResponseID = openai.String(variant.Response.ID)
 
@@ -245,8 +256,6 @@ func (r *Runner) askResponse(
 	}
 
 	fmt.Println()
-	log.Println("Final Response:", outputText)
-	fmt.Println()
 	log.Printf("token exhausted: %d", tokenUsed)
 
 	return nil
@@ -274,7 +283,6 @@ func (r *Runner) askChat(
 	defer stream.Close()
 
 	var tokenUsed int64
-	var outputText strings.Builder
 	var finalReason string
 	justReachConclusion := true
 
@@ -308,6 +316,7 @@ func (r *Runner) askChat(
 			if justReachConclusion {
 				fmt.Println()
 				fmt.Println()
+				fmt.Println("Answer:")
 			}
 			justReachConclusion = false
 
@@ -317,7 +326,6 @@ func (r *Runner) askChat(
 				toolCalls = append(toolCalls, delta.ToolCalls...)
 			}
 
-			outputText.WriteString(delta.Content)
 			finalReason = c.FinishReason
 		}
 	}
@@ -357,15 +365,13 @@ func (r *Runner) askChat(
 		fmt.Println()
 	}
 
+	fmt.Println()
+	log.Println("Final Reason:", finalReason)
+
 	if len(toolCalls) > 0 {
-		fmt.Println()
-		log.Println("Final Reason:", finalReason)
 		return r.askChat(ctx, convos)
 	}
 
-	fmt.Println()
-	log.Println("Final Reason:", finalReason)
-	log.Println("Final Response:", outputText.String())
 	log.Println("Token used:", tokenUsed)
 
 	return nil
