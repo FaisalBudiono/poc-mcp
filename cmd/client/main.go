@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -16,22 +19,21 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
-var model = "qwen3.5:4b"
-
 func main() {
 	mcpClient := mcp.NewClient(&mcp.Implementation{
 		Name:    "mcp-client-go",
 		Version: "0.1.0",
 	}, nil)
 
-	ctx := context.Background()
-
-	cmd := exec.CommandContext(ctx, "./server")
-
-	transport := &mcp.CommandTransport{
-		Command: cmd,
+	slog, err := NewLogger()
+	if err != nil {
+		log.Fatalf("Failed to create logger: %v", err)
 	}
 
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "./server")
+
+	transport := &mcp.CommandTransport{Command: cmd}
 	sess, err := mcpClient.Connect(ctx, transport, nil)
 	if err != nil {
 		log.Fatalf("Failed to connect to server: %v", err)
@@ -63,13 +65,9 @@ func main() {
 		oaiTools[i] = unionParam
 	}
 
-	r := newRunner(
-		sess,
-		openai.NewClient(
-			option.WithBaseURL("http://localhost:11434/v1"),
-		),
-		oaiTools,
-	)
+	r := newRunner(slog, sess, openai.NewClient(
+		option.WithBaseURL("http://localhost:11434/v1"),
+	), oaiTools)
 
 	// question := "What is 1+1?"
 	// question := "Is there any Ucul to do that still need to be done?"
@@ -84,6 +82,8 @@ func main() {
 }
 
 type Runner struct {
+	slog *slog.Logger
+
 	mcpSession *mcp.ClientSession
 
 	oaiClient openai.Client
@@ -91,14 +91,18 @@ type Runner struct {
 
 	reasoning       shared.ReasoningParam
 	maxOutputTokens param.Opt[int64]
+	model           string
 }
 
 func newRunner(
+	slog *slog.Logger,
 	mcpSession *mcp.ClientSession,
 	oaiClient openai.Client,
 	tools []responses.ToolUnionParam,
 ) *Runner {
 	return &Runner{
+		slog: slog,
+
 		mcpSession: mcpSession,
 		oaiClient:  oaiClient,
 		tools:      tools,
@@ -108,6 +112,7 @@ func newRunner(
 			Effort: openai.ReasoningEffortMedium,
 		},
 		maxOutputTokens: openai.Int(12000),
+		model:           "qwen3.5:4b",
 	}
 }
 
@@ -123,7 +128,7 @@ func (r *Runner) ask(
 	prevResID param.Opt[string],
 ) error {
 	stream := r.oaiClient.Responses.NewStreaming(ctx, responses.ResponseNewParams{
-		Model: model,
+		Model: r.model,
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: convos,
 		},
@@ -143,6 +148,8 @@ func (r *Runner) ask(
 
 	for stream.Next() {
 		data := stream.Current()
+
+		r.slog.DebugContext(ctx, data.RawJSON())
 
 		switch variant := data.AsAny().(type) {
 		case responses.ResponseReasoningSummaryTextDeltaEvent:
@@ -214,4 +221,18 @@ func (r *Runner) ask(
 	}
 
 	return r.ask(ctx, inputList, currentResponseID)
+}
+
+func NewLogger() (*slog.Logger, error) {
+	fp := filepath.Join("./temp", "log.log")
+	f, err := os.OpenFile(fp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	slogHandler := slog.NewJSONHandler(f, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+
+	return slog.New(slogHandler), nil
 }
