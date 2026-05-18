@@ -24,7 +24,7 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "todos-list",
-		Description: "Get list of what Ucul need todo",
+		Description: "Get updated list of what Ucul need todo",
 		Annotations: &mcp.ToolAnnotations{
 			DestructiveHint: new(false),
 			ReadOnlyHint:    true,
@@ -70,10 +70,15 @@ func main() {
 			return nil, nil, err
 		}
 
+		jsonRes, err := json.Marshal(res)
+		if err != nil {
+			return nil, nil, err
+		}
+
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: fmt.Sprintf("Todo %d created", res.ID),
+					Text: string(jsonRes),
 				},
 			},
 		}, nil, nil
@@ -100,21 +105,15 @@ func main() {
 					err, fmt.Errorf("todo with ID of %d is not found", input.ID))
 			}
 
-			marker := func() string {
-				if res.Done {
-					return "done"
-				}
-				return "not done"
-			}()
+			jsonRes, err := json.Marshal(res)
+			if err != nil {
+				return nil, nil, err
+			}
 
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
 					&mcp.TextContent{
-						Text: fmt.Sprintf(
-							"Todo with ID of %d is toggled to <%s>",
-							res.ID,
-							marker,
-						),
+						Text: string(jsonRes),
 					},
 				},
 			}, nil, nil
