@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -70,10 +71,13 @@ func main() {
 	), oaiTools)
 
 	// question := "What is 1+1?"
+	// question := "What is capital of Japan?"
 	// question := "Is there any Ucul to do that still need to be done?"
 	// question := "Add 'Clean up dev server' into Ucul to do list"
 	// question := "I already clean up my dev server, can you mark that as done in my to do list? After that, let me know which tasks is done and which is still outstanding?"
-	question := "I already clean up my dev server, can you mark that task as done in my to do list? After that, let me know which tasks is done and which is still outstanding?"
+	// question := "I marked the clean up my dev server as done before. It actually hasn't done. Can you put that as not done again?"
+	// question := "Server apa yang harus aku bersihkan di todo listku?"
+	question := "Aku sudah beli susu dan clean up my bedroom. Please mark both of that as done. After that tell me, what other todo list that I need to do?"
 
 	err = r.Run(ctx, question)
 	if err != nil {
@@ -89,6 +93,8 @@ type Runner struct {
 	oaiClient openai.Client
 	tools     []responses.ToolUnionParam
 
+	oldTools []openai.ChatCompletionToolUnionParam
+
 	reasoning       shared.ReasoningParam
 	maxOutputTokens param.Opt[int64]
 	model           string
@@ -100,12 +106,23 @@ func newRunner(
 	oaiClient openai.Client,
 	tools []responses.ToolUnionParam,
 ) *Runner {
+	oldTools := make([]openai.ChatCompletionToolUnionParam, len(tools))
+	for i, tool := range tools {
+		oldTools[i] = openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
+			Name:        tool.OfFunction.Name,
+			Strict:      tool.OfFunction.Strict,
+			Description: tool.OfFunction.Description,
+			Parameters:  tool.OfFunction.Parameters,
+		})
+	}
 	return &Runner{
 		slog: slog,
 
 		mcpSession: mcpSession,
 		oaiClient:  oaiClient,
 		tools:      tools,
+
+		oldTools: oldTools,
 
 		reasoning: shared.ReasoningParam{
 			// Effort: openai.ReasoningEffortNone, // Put no reasoning for faster response
@@ -117,12 +134,16 @@ func newRunner(
 }
 
 func (r *Runner) Run(ctx context.Context, question string) error {
-	return r.ask(ctx, responses.ResponseInputParam{
+	// return r.askChat(ctx, []openai.ChatCompletionMessageParamUnion{
+	// 	openai.UserMessage(question),
+	// })
+
+	return r.askResponse(ctx, responses.ResponseInputParam{
 		responses.ResponseInputItemParamOfMessage(question, responses.EasyInputMessageRoleUser),
 	}, param.Opt[string]{})
 }
 
-func (r *Runner) ask(
+func (r *Runner) askResponse(
 	ctx context.Context,
 	convos responses.ResponseInputParam,
 	prevResID param.Opt[string],
@@ -144,7 +165,7 @@ func (r *Runner) ask(
 	var tokenUsed int64
 	var currentResponseID param.Opt[string]
 
-	inputList := make(responses.ResponseInputParam, 0)
+	var toolCalls []responses.ResponseFunctionToolCall
 
 	for stream.Next() {
 		data := stream.Current()
@@ -156,51 +177,15 @@ func (r *Runner) ask(
 			fmt.Print(variant.Delta)
 		case responses.ResponseCompletedEvent:
 			outputText = variant.Response.OutputText()
+			fmt.Println(outputText)
+
 			tokenUsed = variant.Response.Usage.TotalTokens
 			currentResponseID = openai.String(variant.Response.ID)
 
 			for _, output := range variant.Response.Output {
 				switch out := output.AsAny().(type) {
 				case responses.ResponseFunctionToolCall:
-					inputList = append(inputList,
-						responses.ResponseInputItemParamOfFunctionCall(
-							out.Arguments,
-							out.CallID,
-							out.Name,
-						),
-					)
-
-					fmt.Println()
-					fmt.Printf("Calling Tool [%s]\nWith Arguments:\n%s", out.Name, out.Arguments)
-
-					var args map[string]any
-					err := json.Unmarshal([]byte(out.Arguments), &args)
-					if err != nil {
-						return errors.Join(err, errors.New("failed to unmarshal tool args"))
-					}
-
-					mcpToolRes, err := r.mcpSession.CallTool(ctx, &mcp.CallToolParams{
-						Name:      out.Name,
-						Arguments: args,
-					})
-					if err != nil {
-						return errors.Join(err, errors.New("failed to call tool"))
-					}
-
-					resultJSON, err := json.Marshal(mcpToolRes)
-					if err != nil {
-						return errors.Join(err, errors.New("failed to serialize tool result"))
-					}
-
-					inputList = append(inputList,
-						responses.ResponseInputItemParamOfFunctionCallOutput(
-							out.CallID,
-							string(resultJSON),
-						),
-					)
-
-					fmt.Println()
-					fmt.Println("Tool called successfully")
+					toolCalls = append(toolCalls, out)
 				}
 			}
 		}
@@ -211,16 +196,176 @@ func (r *Runner) ask(
 		return errors.Join(err, errors.New("failed to read stream"))
 	}
 
-	if outputText != "" {
-		fmt.Println()
-		log.Println("Final Response:", outputText)
-		fmt.Println()
-		log.Printf("token exhausted: %d", tokenUsed)
+	for _, tc := range toolCalls {
+		convos = append(convos,
+			responses.ResponseInputItemParamOfFunctionCall(
+				tc.Arguments,
+				tc.CallID,
+				tc.Name,
+			),
+		)
 
-		return nil
+		fmt.Println()
+		fmt.Println()
+		fmt.Printf("Calling Tool [%s]\nWith Arguments:\n%s", tc.Name, tc.Arguments)
+
+		var args map[string]any
+		err := json.Unmarshal([]byte(tc.Arguments), &args)
+		if err != nil {
+			return errors.Join(err, errors.New("failed to unmarshal tool args"))
+		}
+
+		mcpToolRes, err := r.mcpSession.CallTool(ctx, &mcp.CallToolParams{
+			Name:      tc.Name,
+			Arguments: args,
+		})
+		if err != nil {
+			return errors.Join(err, errors.New("failed to call tool"))
+		}
+
+		resultJSON, err := json.Marshal(mcpToolRes)
+		if err != nil {
+			return errors.Join(err, errors.New("failed to serialize tool result"))
+		}
+
+		convos = append(convos,
+			responses.ResponseInputItemParamOfFunctionCallOutput(
+				tc.CallID,
+				string(resultJSON),
+			),
+		)
+
+		fmt.Println()
+		fmt.Println("Tool called successfully")
+		fmt.Println()
 	}
 
-	return r.ask(ctx, inputList, currentResponseID)
+	if len(toolCalls) > 0 {
+		return r.askResponse(ctx, convos, currentResponseID)
+	}
+
+	fmt.Println()
+	log.Println("Final Response:", outputText)
+	fmt.Println()
+	log.Printf("token exhausted: %d", tokenUsed)
+
+	return nil
+}
+
+type deltaCustom struct {
+	Reasoning string `json:"reasoning"`
+}
+
+func (r *Runner) askChat(
+	ctx context.Context,
+	convos []openai.ChatCompletionMessageParamUnion,
+) error {
+	stream := r.oaiClient.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
+		Model:    r.model,
+		Messages: convos,
+
+		MaxCompletionTokens: r.maxOutputTokens,
+		ReasoningEffort:     r.reasoning.Effort,
+		Tools:               r.oldTools,
+	})
+	defer stream.Close()
+
+	var tokenUsed int64
+	var outputText strings.Builder
+	var finalReason string
+	justReachConclusion := true
+
+	var toolCalls []openai.ChatCompletionChunkChoiceDeltaToolCall
+
+	for stream.Next() {
+		data := stream.Current()
+		tokenUsed = data.Usage.TotalTokens
+
+		r.slog.DebugContext(ctx, data.RawJSON())
+
+		if len(data.Choices) == 0 {
+			r.slog.DebugContext(ctx, "skip stream", slog.String("data", data.RawJSON()))
+			continue
+		}
+
+		for _, c := range data.Choices {
+			delta := c.Delta
+
+			var dc deltaCustom
+			err := json.Unmarshal([]byte(delta.RawJSON()), &dc)
+			if err != nil {
+				return errors.Join(err, errors.New("failed to unmarshal delta"))
+			}
+
+			if dc.Reasoning != "" {
+				fmt.Print(dc.Reasoning)
+				continue
+			}
+
+			if justReachConclusion {
+				fmt.Println()
+				fmt.Println()
+			}
+			justReachConclusion = false
+
+			fmt.Print(delta.Content)
+
+			if len(delta.ToolCalls) > 0 {
+				toolCalls = append(toolCalls, delta.ToolCalls...)
+			}
+
+			outputText.WriteString(delta.Content)
+			finalReason = c.FinishReason
+		}
+	}
+
+	err := stream.Err()
+	if err != nil {
+		return errors.Join(err, errors.New("failed to read stream"))
+	}
+
+	for _, tc := range toolCalls {
+		var args map[string]any
+		err := json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		if err != nil {
+			return errors.Join(err, errors.New("failed to unmarshal tool args"))
+		}
+
+		fmt.Println()
+		fmt.Printf("Calling Tool [%s]\nWith Arguments:\n%s", tc.Function.Name, tc.Function.Arguments)
+		fmt.Println()
+
+		mcpToolRes, err := r.mcpSession.CallTool(ctx, &mcp.CallToolParams{
+			Name:      tc.Function.Name,
+			Arguments: args,
+		})
+		if err != nil {
+			return errors.Join(err, errors.New("failed to call tool"))
+		}
+
+		resultJSON, err := json.Marshal(mcpToolRes)
+		if err != nil {
+			return errors.Join(err, errors.New("failed to serialize tool result"))
+		}
+
+		convos = append(convos, openai.ToolMessage(string(resultJSON), tc.ID))
+
+		fmt.Println("Tool called successfully")
+		fmt.Println()
+	}
+
+	if len(toolCalls) > 0 {
+		fmt.Println()
+		log.Println("Final Reason:", finalReason)
+		return r.askChat(ctx, convos)
+	}
+
+	fmt.Println()
+	log.Println("Final Reason:", finalReason)
+	log.Println("Final Response:", outputText.String())
+	log.Println("Token used:", tokenUsed)
+
+	return nil
 }
 
 func NewLogger() (*slog.Logger, error) {
